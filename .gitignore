@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# Models / large artefacts
+models/*.h5
+models/*.keras
+models/*.weights.h5
+data/processed/
+data/raw/
+
+# Results
+results/*.png
+results/*.json
+results/*.csv
+
+# Flask uploads
+app/static/uploads/
+
+# OS
+Thumbs.db
+.DS_Store
