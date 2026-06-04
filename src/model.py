@@ -97,7 +97,9 @@ def build_custom_backbone(
     inputs = layers.Input(shape=input_shape, name="backbone_input")
     x = inputs
 
-    block_filters = (32, 64, 128, 256)
+    # Five blocks: 32 → 64 → 128 → 256 → 256 (extra 256-filter block deepens
+    # the feature extractor to capture finer stroke patterns).
+    block_filters = (32, 64, 128, 256, 256)
     for i, filters in enumerate(block_filters, start=1):
         x = layers.Conv2D(
             filters,

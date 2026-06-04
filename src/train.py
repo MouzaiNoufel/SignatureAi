@@ -30,14 +30,16 @@ import matplotlib
 
 matplotlib.use("Agg")  # headless-safe
 import matplotlib.pyplot as plt
+import numpy as np
 
 # Make sure ``KERAS_BACKEND`` is set before keras is imported.
 from . import __init__  # noqa: F401  (side-effect import)
 
 import keras
 
+from .evaluate import compute_eer_threshold
 from .model import build_mobilenetv2_siamese_model, build_siamese_model
-from .pair_generator import SignaturePairSequence
+from .pair_generator import SignaturePairSequence, build_pair_index, materialise_pairs
 from .utils import (
     CONFIG,
     MODELS_DIR,
@@ -135,6 +137,35 @@ def _build_callbacks(
     ]
 
 
+class HardNegativeMiningCallback(keras.callbacks.Callback):
+    """Refreshes the training sequence's hard-negative pool every N epochs.
+
+    For the first ``warmup_epochs`` epochs the model is not yet stable enough
+    for meaningful hard-negative selection, so the sequence falls back to
+    random negatives.  After warm-up the pool is rebuilt every
+    ``refresh_every`` epochs so the mined pairs stay aligned with the
+    evolving embeddings.
+    """
+
+    def __init__(
+        self,
+        sequence: SignaturePairSequence,
+        warmup_epochs: int = 5,
+        refresh_every: int = 3,
+    ) -> None:
+        super().__init__()
+        self.sequence = sequence
+        self.warmup_epochs = warmup_epochs
+        self.refresh_every = refresh_every
+
+    def on_epoch_end(self, epoch: int, logs=None) -> None:
+        if epoch < self.warmup_epochs:
+            return
+        if (epoch - self.warmup_epochs) % self.refresh_every == 0:
+            self.sequence.model = self.model
+            self.sequence._refresh_hard_negative_pool()
+
+
 def _plot_history(history: dict, output_path: Path) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 
@@ -213,6 +244,8 @@ def train(config: Config | None = None, **overrides) -> Dict[str, object]:
         augment=cfg.use_augmentation,
         shuffle=True,
         seed=cfg.seed,
+        mine_hard_negatives=True,
+        mining_ratio=4,
     )
     val_seq = SignaturePairSequence(
         genuine,
@@ -249,6 +282,7 @@ def train(config: Config | None = None, **overrides) -> Dict[str, object]:
 
     model_path = MODELS_DIR / model_filename
     callbacks = _build_callbacks(model_path, patience=overrides.get("patience", 10))
+    callbacks.append(HardNegativeMiningCallback(train_seq, warmup_epochs=5, refresh_every=3))
 
     history = model.fit(
         train_seq,
@@ -264,6 +298,30 @@ def train(config: Config | None = None, **overrides) -> Dict[str, object]:
     logger.info("Saved final model to %s", final_path)
     logger.info("Best model (val_loss) kept at %s", model_path)
 
+    # ------------------------------------------------------------------
+    # Auto-compute EER threshold on the validation set using sklearn ROC
+    # ------------------------------------------------------------------
+    logger.info("Computing EER threshold on validation set …")
+    val_pairs = build_pair_index(
+        genuine,
+        forged,
+        writer_ids=val_ids,
+        pairs_per_writer=max(8, cfg.pairs_per_writer),
+        seed=cfg.seed + 77,
+    )
+    val_xa, val_xb, val_y = materialise_pairs(val_pairs)
+    val_distances = model.predict(
+        [val_xa, val_xb], batch_size=cfg.batch_size, verbose=0
+    ).ravel()
+    eer_threshold, eer_value = compute_eer_threshold(val_distances, val_y)
+    cfg.decision_threshold = eer_threshold
+    CONFIG.decision_threshold = eer_threshold
+    logger.info(
+        "EER threshold = %.4f  (EER = %.1f%%)",
+        eer_threshold,
+        eer_value * 100.0,
+    )
+
     history_path = RESULTS_DIR / "training_history.png"
     _plot_history(history.history, history_path)
 
@@ -277,6 +335,8 @@ def train(config: Config | None = None, **overrides) -> Dict[str, object]:
             },
             "model_path": str(model_path),
             "final_model_path": str(final_path),
+            "eer_threshold": eer_threshold,
+            "eer_value": eer_value,
             "history": {k: [float(x) for x in v] for k, v in history.history.items()},
         },
         RESULTS_DIR / "training_summary.json",
@@ -287,6 +347,8 @@ def train(config: Config | None = None, **overrides) -> Dict[str, object]:
         "final_model_path": str(final_path),
         "history_path": str(history_path),
         "writer_splits": {"train": train_ids, "val": val_ids, "test": test_ids},
+        "eer_threshold": eer_threshold,
+        "eer_value": eer_value,
         "history": history.history,
     }
 

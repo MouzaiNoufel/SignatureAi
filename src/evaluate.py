@@ -208,6 +208,34 @@ def compute_far_frr(
     return thresholds, far, frr, eer_threshold, eer_value
 
 
+def compute_eer_threshold(
+    distances: np.ndarray, labels: np.ndarray
+) -> Tuple[float, float]:
+    """Find the EER-optimal decision threshold using sklearn's ``roc_curve``.
+
+    Uses negated distances as the score (lower distance = higher likelihood of
+    being genuine), then finds the point where FAR == FRR.
+
+    Args:
+        distances: 1-D array of Euclidean distances predicted by the model.
+        labels:    1-D array of ground-truth labels (1 = genuine, 0 = forged).
+
+    Returns:
+        ``(eer_threshold, eer_value)`` where *eer_threshold* is the Euclidean
+        distance cut-off and *eer_value* is the EER in [0, 1].
+    """
+    scores = -distances  # higher score => more likely genuine
+    fpr, tpr, score_thresholds = roc_curve(labels, scores)
+    frr = 1.0 - tpr
+    far = fpr
+    diff = np.abs(far - frr)
+    idx = int(np.argmin(diff))
+    # score_thresholds[idx] corresponds to -eer_distance_threshold
+    eer_threshold = float(-score_thresholds[idx])
+    eer_value = float((far[idx] + frr[idx]) / 2.0)
+    return eer_threshold, eer_value
+
+
 # ---------------------------------------------------------------------------
 # Public evaluation routine
 # ---------------------------------------------------------------------------

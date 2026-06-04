@@ -171,6 +171,8 @@ class SignaturePairSequence(_SequenceBase):
         augment: bool = True,
         shuffle: bool = True,
         seed: int = 42,
+        mine_hard_negatives: bool = False,
+        mining_ratio: int = 4,
     ) -> None:
         if not _HAS_KERAS:
             raise RuntimeError(
@@ -195,6 +197,12 @@ class SignaturePairSequence(_SequenceBase):
         self.shuffle = shuffle
         self.seed = seed
         self.pairs_per_writer = pairs_per_writer
+        self.mine_hard_negatives = mine_hard_negatives
+        self.mining_ratio = mining_ratio
+        # Set externally by HardNegativeMiningCallback after each warm-up epoch.
+        self.model = None
+        self._hard_neg_pool: List[Tuple[Path, Path]] = []
+        self._pool_idx: int = 0
         self._rng = np.random.default_rng(seed)
         self._py_rng = random.Random(seed)
 
@@ -230,24 +238,34 @@ class SignaturePairSequence(_SequenceBase):
             xb[i] = self._load(b)
             y[i] = 1.0
 
-        # negatives — alternate between forgery-vs-genuine and cross-writer
-        for j in range(half):
-            i = half + j
-            wid = self._py_rng.choice(self.writer_ids)
-            gens = self.genuine[wid]
-            if j % 2 == 0 and self.forged.get(wid):
-                # skilled forgery negative
-                a = self._py_rng.choice(gens)
-                b = self._py_rng.choice(self.forged[wid])
-            else:
-                # cross-writer negative
-                other_ids = [w for w in self.writer_ids if w != wid]
-                other = self._py_rng.choice(other_ids)
-                a = self._py_rng.choice(gens)
-                b = self._py_rng.choice(self.genuine[other])
-            xa[i] = self._load(a)
-            xb[i] = self._load(b)
-            y[i] = 0.0
+        # negatives — draw from hard-negative pool when available,
+        # otherwise fall back to random (forgery + cross-writer alternating).
+        if self.mine_hard_negatives and self._hard_neg_pool:
+            pool_len = len(self._hard_neg_pool)
+            for j in range(half):
+                a, b = self._hard_neg_pool[self._pool_idx % pool_len]
+                self._pool_idx += 1
+                xa[half + j] = self._load(a)
+                xb[half + j] = self._load(b)
+                y[half + j] = 0.0
+        else:
+            for j in range(half):
+                i = half + j
+                wid = self._py_rng.choice(self.writer_ids)
+                gens = self.genuine[wid]
+                if j % 2 == 0 and self.forged.get(wid):
+                    # skilled forgery negative
+                    a = self._py_rng.choice(gens)
+                    b = self._py_rng.choice(self.forged[wid])
+                else:
+                    # cross-writer negative
+                    other_ids = [w for w in self.writer_ids if w != wid]
+                    other = self._py_rng.choice(other_ids)
+                    a = self._py_rng.choice(gens)
+                    b = self._py_rng.choice(self.genuine[other])
+                xa[i] = self._load(a)
+                xb[i] = self._load(b)
+                y[i] = 0.0
 
         # in-batch shuffle so positives and negatives are interleaved
         order = self._rng.permutation(self.batch_size)
@@ -257,6 +275,60 @@ class SignaturePairSequence(_SequenceBase):
         if self.shuffle:
             # Re-seed the PY RNG so each epoch yields fresh pairs.
             self._py_rng.seed(self._py_rng.randint(0, 2**31 - 1))
+
+    # -- hard negative mining -----------------------------------------------
+
+    def _refresh_hard_negative_pool(self, pool_size: int = 512) -> None:
+        """Rebuild the hard-negative pool using the current model.
+
+        Generates ``pool_size * mining_ratio`` random negative candidates,
+        scores them with ``self.model``, then keeps the ``pool_size`` pairs
+        whose Euclidean distance is closest to ``CONFIG.decision_threshold``
+        — i.e. the most confusing negatives for the network to learn from.
+        Balances skilled-forgery and cross-writer negatives 50/50.
+        """
+        if self.model is None:
+            return
+
+        n_candidates = pool_size * self.mining_ratio
+        candidates: List[Tuple[Path, Path]] = []
+        rng = self._py_rng
+        for k in range(n_candidates):
+            wid = rng.choice(self.writer_ids)
+            gens = self.genuine[wid]
+            if k % 2 == 0 and self.forged.get(wid):
+                a = rng.choice(gens)
+                b = rng.choice(self.forged[wid])
+            else:
+                other_ids = [w for w in self.writer_ids if w != wid]
+                other = rng.choice(other_ids)
+                a = rng.choice(gens)
+                b = rng.choice(self.genuine[other])
+            candidates.append((a, b))
+
+        # Score all candidates in small batches (no augmentation for stability)
+        batch_sz = 64
+        distances: List[float] = []
+        for start in range(0, n_candidates, batch_sz):
+            batch = candidates[start : start + batch_sz]
+            xa_c = np.stack([preprocess_image(a) for a, _ in batch])
+            xb_c = np.stack([preprocess_image(b) for _, b in batch])
+            d = self.model.predict([xa_c, xb_c], verbose=0).ravel()
+            distances.extend(d.tolist())
+
+        distances_arr = np.array(distances, dtype=np.float32)
+        # Select pairs closest to the operating threshold (hardest negatives)
+        proximity = np.abs(distances_arr - CONFIG.decision_threshold)
+        sorted_idx = np.argsort(proximity)[:pool_size]
+        self._hard_neg_pool = [candidates[i] for i in sorted_idx]
+        self._pool_idx = 0
+        logger.info(
+            "Hard-negative pool refreshed: %d pairs, "
+            "mean_dist=%.4f, threshold=%.4f",
+            pool_size,
+            float(distances_arr[sorted_idx].mean()),
+            CONFIG.decision_threshold,
+        )
 
     # -- internals ----------------------------------------------------------
 

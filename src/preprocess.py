@@ -117,21 +117,44 @@ def augment_image(image: np.ndarray, rng: np.random.Generator | None = None) -> 
     """
     rng = rng or np.random.default_rng()
     out = image
-
-    # Small rotation
-    angle = float(rng.uniform(-7.0, 7.0))
     h, w = out.shape[:2]
-    M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
+
+    # Rotation ±5°
+    angle = float(rng.uniform(-5.0, 5.0))
+    M_rot = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
     out = cv2.warpAffine(
-        out, M, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=(1.0, 1.0, 1.0)
+        out, M_rot, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=(1.0, 1.0, 1.0)
     )
 
-    # Small translation
-    tx = int(rng.uniform(-0.04, 0.04) * w)
-    ty = int(rng.uniform(-0.04, 0.04) * h)
+    # Translation ±5% of image dimensions
+    tx = float(rng.uniform(-0.05, 0.05) * w)
+    ty = float(rng.uniform(-0.05, 0.05) * h)
     T = np.float32([[1, 0, tx], [0, 1, ty]])
     out = cv2.warpAffine(
         out, T, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=(1.0, 1.0, 1.0)
+    )
+
+    # Zoom (scale 0.95–1.05)
+    scale = float(rng.uniform(0.95, 1.05))
+    new_h, new_w = int(h * scale), int(w * scale)
+    scaled = cv2.resize(out, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    canvas = np.ones((h, w, out.shape[2]), dtype=np.float32)
+    y0 = max(0, (new_h - h) // 2)
+    x0 = max(0, (new_w - w) // 2)
+    sh = min(new_h, h)
+    sw = min(new_w, w)
+    py = max(0, (h - new_h) // 2)
+    px = max(0, (w - new_w) // 2)
+    canvas[py : py + sh, px : px + sw] = scaled[y0 : y0 + sh, x0 : x0 + sw]
+    out = canvas
+
+    # Shear ±5°
+    shear_tan = float(np.tan(np.radians(rng.uniform(-5.0, 5.0))))
+    M_shear = np.array(
+        [[1.0, shear_tan, -shear_tan * h / 2], [0.0, 1.0, 0.0]], dtype=np.float32
+    )
+    out = cv2.warpAffine(
+        out, M_shear, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=(1.0, 1.0, 1.0)
     )
 
     # Brightness jitter

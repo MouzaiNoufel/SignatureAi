@@ -102,7 +102,7 @@ class Config:
     batch_size: int = 32
     epochs: int = 77
     learning_rate: float = 1e-4
-    margin: float = 1.0
+    margin: float = 2.0
     embedding_dim: int = 128
 
     # Pair generation
@@ -118,9 +118,10 @@ class Config:
     use_augmentation: bool = True
 
     # Decision threshold on Euclidean distance — distance < threshold => genuine.
-    # 0.264 was the EER-optimal threshold found on the held-out writer split
-    # after the spec-default 77-epoch training run (Accuracy 85.6%, AUC 0.943).
-    decision_threshold: float = 0.264
+    # Automatically recalculated as the EER-optimal threshold on the validation
+    # set after each training run (via sklearn roc_curve).  Falls back to 0.5
+    # until the first training run completes.
+    decision_threshold: float = 0.5
 
     @property
     def input_shape(self) -> Tuple[int, int, int]:
