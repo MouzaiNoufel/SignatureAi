@@ -46,6 +46,7 @@ from src.utils import (  # noqa: E402
     UPLOADS_DIR,
     ensure_directories,
     get_logger,
+    load_eer_threshold,
 )
 
 logger = get_logger("signet.web")
@@ -138,6 +139,9 @@ def create_app(model_path: str | None = None) -> Flask:
             resolved_model_path,
         )
 
+    # Load the EER threshold saved by the last training run.
+    _threshold = load_eer_threshold()
+
     # -- routes ------------------------------------------------------------
 
     @app.get("/")
@@ -149,7 +153,7 @@ def create_app(model_path: str | None = None) -> Flask:
             image_a_url=None,
             image_b_url=None,
             model_ready=verifier is not None,
-            threshold=CONFIG.decision_threshold,
+            threshold=_threshold,
         )
 
     @app.post("/verify")

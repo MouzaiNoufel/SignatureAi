@@ -35,7 +35,7 @@ import keras
 
 from .model import get_custom_objects
 from .preprocess import preprocess_image
-from .utils import CONFIG, MODELS_DIR, get_logger
+from .utils import CONFIG, MODELS_DIR, get_logger, load_eer_threshold
 
 logger = get_logger(__name__)
 
@@ -97,7 +97,7 @@ class SignatureVerifier:
             )
 
         self.threshold = float(
-            threshold if threshold is not None else CONFIG.decision_threshold
+            threshold if threshold is not None else load_eer_threshold()
         )
         self.margin = float(margin if margin is not None else CONFIG.margin)
 

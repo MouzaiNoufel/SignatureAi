@@ -102,7 +102,7 @@ class Config:
     batch_size: int = 32
     epochs: int = 77
     learning_rate: float = 1e-4
-    margin: float = 2.0
+    margin: float = 1.0
     embedding_dim: int = 128
 
     # Pair generation
@@ -262,3 +262,26 @@ def save_json(payload: dict, path: Path) -> None:
 def load_json(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as fh:
         return json.load(fh)
+
+
+def load_eer_threshold(fallback: float | None = None) -> float:
+    """Load the EER-optimal threshold saved by the last training run.
+
+    Reads ``results/training_summary.json``.  Falls back to
+    ``CONFIG.decision_threshold`` (or *fallback* if supplied) when the file
+    is missing or does not contain the key.
+    """
+    default = fallback if fallback is not None else CONFIG.decision_threshold
+    summary_path = RESULTS_DIR / "training_summary.json"
+    if not summary_path.exists():
+        return default
+    try:
+        data = load_json(summary_path)
+        value = data.get("eer_threshold")
+        if value is not None:
+            threshold = float(value)
+            CONFIG.decision_threshold = threshold
+            return threshold
+    except Exception:
+        pass
+    return default
