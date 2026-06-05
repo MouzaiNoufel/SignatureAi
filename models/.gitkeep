@@ -1,0 +1,2 @@
+# Trained Keras models are written here at training time.
+# Tracked file kept only so the folder exists in fresh clones.
